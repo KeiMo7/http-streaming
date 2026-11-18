@@ -46,6 +46,7 @@ import {merge} from './util/vjs-compat';
 // and we do not want to break our users
 import {version as vhsVersion} from '../package.json';
 import {version as muxVersion} from 'mux.js/package.json';
+import {normalizeHdrConfig} from './util/hdr.js';
 import {version as mpdVersion} from 'mpd-parser/package.json';
 import {version as m3u8Version} from 'm3u8-parser/package.json';
 import {version as aesVersion} from 'aes-decrypter/package.json';
@@ -758,12 +759,15 @@ class VhsHandler extends Component {
       'useNetworkInformationApi',
       'useDtsForTimestampOffset',
       'exactManifestTimings',
-      'leastPixelDiffSelector'
+      'leastPixelDiffSelector',
+      'hdr'
     ].forEach((option) => {
       if (typeof this.source_[option] !== 'undefined') {
         this.options_[option] = this.source_[option];
       }
     });
+
+    this.options_.hdr = normalizeHdrConfig(this.options_.hdr);
 
     this.limitRenditionByPlayerDimensions = this.options_.limitRenditionByPlayerDimensions;
     this.useDevicePixelRatio = this.options_.useDevicePixelRatio;
@@ -981,6 +985,10 @@ class VhsHandler extends Component {
       mediaAppends: {
         get: () => this.playlistController_.mediaAppends_() || 0,
         enumerable: true
+      },
+      hdrProcessingDuration: {
+        get: () => this.playlistController_.hdrProcessingDuration_() || 0,
+        enumerable: false
       },
       mainAppendsToLoadedData: {
         get: () => this.playlistController_.mainAppendsToLoadedData_() || 0,

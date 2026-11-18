@@ -226,9 +226,11 @@ const parseInitSegment = (segment, callback) => {
     action: 'probeMp4Tracks',
     data: segment.map.bytes,
     transmuxer: segment.transmuxer,
-    callback: ({tracks, data}) => {
+    callback: ({tracks, data, colorMetadata, hdrResult}) => {
       // transfer bytes back to us
       segment.map.bytes = data;
+      segment.map.colorMetadata = colorMetadata;
+      segment.map.hdrResult = hdrResult;
 
       tracks.forEach(function(track) {
         segment.map.tracks = segment.map.tracks || {};
@@ -558,10 +560,20 @@ const handleSegmentBytes = ({
       // for it to be audio only. See `tracks.video && tracks.audio` if statement
       // above.
       // we make sure to use segment.bytes here as that
-      dataFn(segment, {
+      const result = {
         data: bytesAsUint8Array,
         type: trackInfo.hasAudio && !trackInfo.isMuxed ? 'audio' : 'video'
-      });
+      };
+
+      if (segment.map && segment.map.colorMetadata) {
+        result.colorMetadata = segment.map.colorMetadata;
+      }
+
+      if (segment.map && segment.map.hdrResult) {
+        result.hdrResult = segment.map.hdrResult;
+      }
+
+      dataFn(segment, result);
       if (id3Frames && id3Frames.length) {
         id3Fn(segment, id3Frames);
       }

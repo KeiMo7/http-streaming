@@ -44,7 +44,8 @@ const loaderStats = [
   'mediaRequestsErrored',
   'mediaTransferDuration',
   'mediaBytesTransferred',
-  'mediaAppends'
+  'mediaAppends',
+  'hdrProcessingDuration'
 ];
 const sumLoaderStat = function(stat) {
   return this.audioSegmentLoader_[stat] +
@@ -172,7 +173,8 @@ export class PlaylistController extends videojs.EventTarget {
       bufferBasedABR,
       leastPixelDiffSelector,
       captionServices,
-      experimentalUseMMS
+      experimentalUseMMS,
+      hdr
     } = options;
 
     if (!src) {
@@ -285,7 +287,8 @@ export class PlaylistController extends videojs.EventTarget {
       sourceUpdater: this.sourceUpdater_,
       timelineChangeController: this.timelineChangeController_,
       exactManifestTimings: options.exactManifestTimings,
-      addMetadataToTextTrack: this.addMetadataToTextTrack.bind(this)
+      addMetadataToTextTrack: this.addMetadataToTextTrack.bind(this),
+      hdr
     };
 
     // The source type check not only determines whether a special DASH playlist loader

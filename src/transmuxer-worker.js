@@ -19,21 +19,42 @@ import CaptionParser from 'mux.js/lib/mp4/caption-parser';
 import WebVttParser from 'mux.js/lib/mp4/webvtt-parser';
 import mp4probe from 'mux.js/lib/mp4/probe';
 import tsInspector from 'mux.js/lib/tools/ts-inspector.js';
+import {processHdrInitSegment} from './util/hdr.js';
 import {
   ONE_SECOND_IN_TS,
   secondsToVideoTs,
   videoTsToSeconds
 } from 'mux.js/lib/utils/clock';
 
+const serializeHdrResult = (result) => ({
+  action: result.action,
+  kind: result.kind,
+  warnings: result.warnings,
+  timingMs: result.timingMs,
+  error: result.error ? {
+    message: result.error.message,
+    code: result.error.code,
+    metadata: result.error.metadata
+  } : null
+});
+
 /**
  * Re-emits transmuxer events by converting them into messages to the
  * world outside the worker.
  *
+ * @param {Object} self the worker global
  * @param {Object} transmuxer the transmuxer to wire events on
+ * @param {Object} [hdrConfig] HDR color metadata configuration
  * @private
  */
-const wireTransmuxerEvents = function(self, transmuxer) {
+const wireTransmuxerEvents = function(self, transmuxer, hdrConfig) {
   transmuxer.on('data', function(segment) {
+    const hdrResult = processHdrInitSegment(segment.initSegment, hdrConfig);
+
+    segment.initSegment = hdrResult.initSegment;
+    segment.colorMetadata = hdrResult.metadata;
+    segment.hdrResult = serializeHdrResult(hdrResult);
+
     // transfer ownership of the underlying ArrayBuffer
     // instead of doing a copy to save memory
     // ArrayBuffers are transferable but generic TypedArrays are not
@@ -185,7 +206,7 @@ class MessageHandlers {
     }
     this.transmuxer = new Transmuxer(this.options);
 
-    wireTransmuxerEvents(this.self, this.transmuxer);
+    wireTransmuxerEvents(this.self, this.transmuxer, this.options.hdr);
   }
 
   pushMp4Captions(data) {
@@ -257,13 +278,16 @@ class MessageHandlers {
   }
 
   probeMp4Tracks({data}) {
-    const tracks = mp4probe.tracks(data);
+    const hdrResult = processHdrInitSegment(data, this.options.hdr);
+    const tracks = mp4probe.tracks(hdrResult.initSegment);
 
     this.self.postMessage({
       action: 'probeMp4Tracks',
       tracks,
-      data
-    }, [data.buffer]);
+      colorMetadata: hdrResult.metadata,
+      hdrResult: serializeHdrResult(hdrResult),
+      data: hdrResult.initSegment
+    }, [hdrResult.initSegment.buffer]);
   }
 
   /**

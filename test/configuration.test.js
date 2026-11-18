@@ -10,6 +10,7 @@ import videojs from 'video.js';
 import {VhsSourceHandler, VhsHandler, Vhs} from '../src/videojs-http-streaming';
 /* eslint-enable no-unused-vars */
 import Config from '../src/config';
+import {normalizeHdrConfig} from '../src/util/hdr';
 
 // list of posible options
 // name - the proprety name
@@ -455,4 +456,22 @@ options.forEach((opt) => {
       `${opt.name} should be equal to sourceHandler option`
     );
   });
+});
+
+QUnit.test('hdr defaults preserve legacy playback and can be disabled', function(assert) {
+  this.player = createPlayer();
+  this.player.src({
+    src: 'http://example.com/media.m3u8',
+    type: 'application/vnd.apple.mpegurl'
+  });
+  this.clock.tick(1);
+
+  const vhs = this.player.tech_.vhs;
+
+  assert.deepEqual(vhs.options_.hdr, normalizeHdrConfig(), 'HDR options use default values');
+  assert.equal(vhs.options_.hdr.enabled, true, 'HDR detection is enabled by default');
+  assert.equal(vhs.options_.hdr.missingMetadata, 'sdr', 'missing metadata remains SDR');
+
+  vhs.setOptions({hdr: {enabled: false}});
+  assert.equal(vhs.options_.hdr.enabled, false, 'HDR path can be disabled');
 });

@@ -2,7 +2,10 @@ import QUnit from 'qunit';
 import sinon from 'sinon';
 import {
   muxed as muxedSegment,
-  caption as captionSegment
+  caption as captionSegment,
+  hdr10 as hdr10Segment,
+  hlg as hlgSegment,
+  sdrHdrPath as sdrHdrPathSegment
 } from 'create-test-data!segments';
 import {
   transmux,
@@ -17,15 +20,20 @@ import {
   handleData_,
   createTransmuxer as createTransmuxer_
 } from '../src/segment-transmuxer';
+import {
+  DEFAULT_HDR_CONFIG,
+  getColorMetadataFromInitSegment
+} from '../src/util/hdr';
 // needed for plugin registration
 import '../src/videojs-http-streaming';
 
 const noop = () => {};
 
-const createTransmuxer = () => {
+const createTransmuxer = (options = {}) => {
   return createTransmuxer_({
     remux: false,
-    keepOriginalTimestamps: true
+    keepOriginalTimestamps: true,
+    ...options
   });
 };
 
@@ -39,6 +47,33 @@ const mockTransmuxer = () => {
 
   return transmuxer;
 };
+
+const transmuxFixture = (bytes, hdr) => new Promise((resolve) => {
+  const transmuxer = createTransmuxer(typeof hdr === 'undefined' ? {} : {hdr});
+  let result;
+
+  transmux({
+    transmuxer,
+    bytes,
+    audioAppendStart: null,
+    gopsToAlignWith: null,
+    onData: (data) => {
+      result = data;
+    },
+    onTrackInfo: noop,
+    onAudioTimingInfo: noop,
+    onVideoTimingInfo: noop,
+    onVideoSegmentTimingInfo: noop,
+    onAudioSegmentTimingInfo: noop,
+    onId3: noop,
+    onCaptions: noop,
+    onDone: () => {
+      transmuxer.terminate();
+      resolve(result);
+    },
+    triggerSegmentEventFn: noop
+  });
+});
 
 QUnit.module('Segment Transmuxer', {
   beforeEach(assert) {
@@ -87,6 +122,50 @@ QUnit.test('transmux returns data for full appends', function(assert) {
     },
     triggerSegmentEventFn: () => {}
   });
+});
+
+QUnit.test('transmux reports HDR10 color metadata and writes colr', async function(assert) {
+  const result = await transmuxFixture(hdr10Segment(), DEFAULT_HDR_CONFIG);
+  const metadata = getColorMetadataFromInitSegment(result.initSegment);
+
+  assert.equal(result.colorMetadata.hdrType, 'hdr10', 'result has HDR10 metadata');
+  assert.equal(metadata.primariesName, 'bt2020', 'BT.2020 primaries');
+  assert.equal(metadata.transferName, 'smpte2084', 'PQ transfer');
+  assert.ok(
+    metadata.sources.some((source) => source.indexOf('nclx') !== -1),
+    'output init segment has nclx colr metadata'
+  );
+});
+
+QUnit.test('transmux reports HLG separately from HDR10', async function(assert) {
+  const result = await transmuxFixture(hlgSegment(), DEFAULT_HDR_CONFIG);
+
+  assert.equal(result.colorMetadata.hdrType, 'hlg', 'result has HLG metadata');
+  assert.equal(result.colorMetadata.transferName, 'arib-std-b67', 'HLG transfer');
+  assert.notEqual(result.colorMetadata.transferName, 'smpte2084', 'not mapped as PQ');
+});
+
+QUnit.test('concurrent transmuxers keep HDR state isolated', async function(assert) {
+  const [hdr10, hlg] = await Promise.all([
+    transmuxFixture(hdr10Segment(), DEFAULT_HDR_CONFIG),
+    transmuxFixture(hlgSegment(), DEFAULT_HDR_CONFIG)
+  ]);
+
+  assert.equal(hdr10.colorMetadata.hdrType, 'hdr10', 'HDR10 worker remains HDR10');
+  assert.equal(hlg.colorMetadata.hdrType, 'hlg', 'HLG worker remains HLG');
+});
+
+QUnit.test('SDR transmux bytes are identical with HDR enabled or disabled', async function(assert) {
+  const disabled = await transmuxFixture(sdrHdrPathSegment());
+  const enabled = await transmuxFixture(sdrHdrPathSegment(), DEFAULT_HDR_CONFIG);
+
+  assert.deepEqual(enabled.data, disabled.data, 'media bytes are byte-identical');
+  assert.deepEqual(
+    enabled.initSegment,
+    disabled.initSegment,
+    'initialization segment is byte-identical'
+  );
+  assert.equal(enabled.colorMetadata.hdrType, 'sdr', 'SDR was classified');
 });
 
 QUnit.test('transmux returns captions for full appends', function(assert) {

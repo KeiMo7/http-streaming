@@ -10,7 +10,9 @@ export const handleData_ = (event, transmuxedData, callback) => {
     captionStreams,
     metadata,
     videoFrameDtsTime,
-    videoFramePtsTime
+    videoFramePtsTime,
+    colorMetadata,
+    hdrResult
   } = event.data.segment;
 
   transmuxedData.buffer.push({
@@ -37,6 +39,14 @@ export const handleData_ = (event, transmuxedData, callback) => {
       initSegment.byteLength
     )
   };
+
+  if (colorMetadata) {
+    result.colorMetadata = colorMetadata;
+  }
+
+  if (hdrResult) {
+    result.hdrResult = hdrResult;
+  }
 
   if (typeof videoFrameDtsTime !== 'undefined') {
     result.videoFrameDtsTime = videoFrameDtsTime;

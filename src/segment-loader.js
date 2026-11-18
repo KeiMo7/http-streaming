@@ -23,6 +23,13 @@ import { QUOTA_EXCEEDED_ERR } from './error-codes';
 import {timeRangesToArray, lastBufferedEnd, timeAheadOf} from './ranges.js';
 import {getKnownPartCount} from './playlist.js';
 import {createTimeRanges} from './util/vjs-compat';
+import {
+  normalizeHdrConfig,
+  validateHdrMetadata,
+  reconcileHdrMetadata,
+  injectColrIntoInitSegment,
+  hdrMetadataSummary
+} from './util/hdr.js';
 
 /**
  * The segment loader has no recourse except to fetch a segment in the
@@ -648,6 +655,8 @@ export default class SegmentLoader extends videojs.EventTarget {
     this.captionServices_ = settings.captionServices;
     this.exactManifestTimings = settings.exactManifestTimings;
     this.addMetadataToTextTrack = settings.addMetadataToTextTrack;
+    this.hdrConfig_ = normalizeHdrConfig(settings.hdr);
+    this.hdrColorMetadata_ = null;
 
     // private instance variables
     this.checkBufferTimeout_ = null;
@@ -794,7 +803,8 @@ export default class SegmentLoader extends videojs.EventTarget {
       alignGopsAtEnd: this.safeAppend_,
       keepOriginalTimestamps: true,
       parse708captions: this.parse708captions_,
-      captionServices: this.captionServices_
+      captionServices: this.captionServices_,
+      hdr: this.hdrConfig_
     });
   }
 
@@ -812,6 +822,7 @@ export default class SegmentLoader extends videojs.EventTarget {
     this.mediaTransferDuration = 0;
     this.mediaSecondsLoaded = 0;
     this.mediaAppends = 0;
+    this.hdrProcessingDuration = 0;
   }
 
   /**
@@ -995,7 +1006,9 @@ export default class SegmentLoader extends videojs.EventTarget {
         byterange: map.byterange,
         bytes: map.bytes,
         tracks: map.tracks,
-        timescales: map.timescales
+        timescales: map.timescales,
+        colorMetadata: map.colorMetadata,
+        hdrResult: map.hdrResult
       };
     }
 
@@ -2299,6 +2312,12 @@ Fetch At Buffer: ${this.fetchAtBuffer_}
 
     const segmentInfo = this.pendingSegment_;
 
+    const hdrError = this.handleHdrMetadata_(segmentInfo, result);
+
+    if (hdrError) {
+      return;
+    }
+
     // update the time mapping so we can translate from display time to media time
     this.setTimeMapping_(segmentInfo.timeline);
 
@@ -2319,6 +2338,15 @@ Fetch At Buffer: ${this.fetchAtBuffer_}
     // to the initSegment cache
     if (simpleSegment.map) {
       simpleSegment.map = this.initSegmentForMap(simpleSegment.map, true);
+
+      if (segmentInfo.colorMetadata && segmentInfo.colorMetadata.hdr &&
+          simpleSegment.map.bytes) {
+        simpleSegment.map.bytes = injectColrIntoInitSegment(
+          simpleSegment.map.bytes,
+          segmentInfo.colorMetadata
+        );
+      }
+
       // move over init segment properties to media request
       segmentInfo.segment.map = simpleSegment.map;
     }
@@ -2403,6 +2431,96 @@ Fetch At Buffer: ${this.fetchAtBuffer_}
     this.processMetadataQueue_();
 
     this.appendData_(segmentInfo, result);
+  }
+
+  /**
+   * Validates and retains HDR color metadata for a segment before appending.
+   *
+   * @param {Object} segmentInfo the pending segment
+   * @param {Object} result transmux result containing color metadata
+   * @return {Error|null} an HDR validation or switch error
+   * @private
+   */
+  handleHdrMetadata_(segmentInfo, result) {
+    if (!this.hdrConfig_.enabled) {
+      return null;
+    }
+
+    const validation = validateHdrMetadata(result.colorMetadata, this.hdrConfig_);
+    const segment = segmentInfoString(segmentInfo);
+
+    if (validation.action === 'reject') {
+      videojs.log.warn(`HDR pipeline failure for ${segment}: ${validation.error.message}`);
+      this.error({
+        message: validation.error.message,
+        code: validation.error.code,
+        metadata: Object.assign(
+          {
+            errorType: videojs.Error.StreamingFailedToTransmuxSegment,
+            segmentInfo: segmentInfoPayload({type: this.loaderType_, segment: segmentInfo})
+          },
+          validation.error.metadata
+        )
+      });
+      this.trigger('error');
+      return validation.error;
+    }
+
+    const reconciled = reconcileHdrMetadata(
+      this.hdrColorMetadata_,
+      result.colorMetadata,
+      this.hdrConfig_
+    );
+
+    if (reconciled.error) {
+      videojs.log.warn(`HDR pipeline failure for ${segment}: ${reconciled.error.message}`);
+      this.error({
+        message: reconciled.error.message,
+        code: reconciled.error.code,
+        metadata: Object.assign(
+          {
+            errorType: videojs.Error.StreamingFailedToTransmuxSegment,
+            segmentInfo: segmentInfoPayload({type: this.loaderType_, segment: segmentInfo})
+          },
+          reconciled.error.metadata
+        )
+      });
+      this.trigger('error');
+      return reconciled.error;
+    }
+
+    const shouldWarnMissing = validation.kind === 'sdr' &&
+      (result.colorMetadata || this.hdrConfig_.warnOnMissingMetadata);
+
+    if (shouldWarnMissing) {
+      validation.warnings.forEach((warning) => videojs.log.warn(warning));
+    }
+    reconciled.warnings.forEach((warning) => videojs.log.warn(warning));
+
+    if (reconciled.metadata) {
+      segmentInfo.colorMetadata = reconciled.metadata;
+      this.hdrColorMetadata_ = reconciled.metadata;
+
+      if (reconciled.metadata.hdr) {
+        const toneMapping = this.hdrConfig_.toneMapping;
+
+        this.logger_(`HDR pipeline enter: ${hdrMetadataSummary(reconciled.metadata)} ` +
+          `toneMapping=${toneMapping.strategy} targetPeakNits=${toneMapping.targetPeakNits || 'display'}`);
+
+        if (result.initSegment) {
+          result.initSegment = injectColrIntoInitSegment(
+            result.initSegment,
+            reconciled.metadata
+          );
+        }
+      }
+    }
+
+    if (result.hdrResult && typeof result.hdrResult.timingMs === 'number') {
+      this.hdrProcessingDuration += result.hdrResult.timingMs;
+    }
+
+    return null;
   }
 
   updateAppendInitSegmentStatus(segmentInfo, type) {
@@ -3360,6 +3478,10 @@ ${segmentInfoString(segmentInfo)}`);
     }
 
     this.logger_(`Appended ${segmentInfoString(segmentInfo)}`);
+
+    if (segmentInfo.colorMetadata && segmentInfo.colorMetadata.hdr) {
+      this.logger_(`HDR pipeline exit: ${hdrMetadataSummary(segmentInfo.colorMetadata)}`);
+    }
 
     this.addSegmentMetadataCue_(segmentInfo);
     this.fetchAtBuffer_ = true;

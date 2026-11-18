@@ -56,6 +56,7 @@ Video.js Compatibility: 7.x, 8.x
       - [customTagParsers](#customtagparsers)
       - [customTagMappers](#customtagmappers)
       - [cacheEncryptionKeys](#cacheencryptionkeys)
+      - [hdr](#hdr)
       - [handlePartialData](#handlepartialdata)
       - [liveRangeSafeTimeDelta](#liverangesafetimedelta)
       - [useNetworkInformationApi](#usenetworkinformationapi)
@@ -348,6 +349,79 @@ var player = videojs('playerId', {
 * can be used as an initialization option
 
 When set to `false`, 708 captions in the stream are not parsed and will not show up in text track lists or the captions menu.
+
+##### hdr
+* Type: `object`
+* can be used as an initialization option or a source option
+
+HDR color metadata handling is enabled by default. VHS detects BT.2020/PQ
+(HDR10) and BT.2020/HLG from H.264 SPS VUI, HEVC SPS VUI, and fMP4 `colr`
+boxes. For transmuxed TS content it writes an `nclx` `colr` box into the
+generated initialization segment when one is not already present. SDR
+initialization and media bytes are not rewritten.
+
+VHS does not decode or software-transcode pixels. Tone mapping is therefore
+performed by the browser/display pipeline. The `toneMapping` object makes the
+selected strategy and display hints explicit; `strategy: "sdr"` is rejected
+because the MSE transport has no pixel-processing stage.
+
+```javascript
+var player = videojs('playerId', {
+  html5: {
+    vhs: {
+      hdr: {
+        enabled: true,
+        missingMetadata: 'sdr',
+        conflictPolicy: 'reject',
+        minimumBitDepth: 10,
+        warnOnMissingMetadata: false,
+        toneMapping: {
+          strategy: 'browser',
+          targetPeakNits: 1000,
+          sourcePeakNits: 1000,
+          referenceWhiteNits: 203
+        }
+      }
+    }
+  }
+});
+```
+
+* `enabled` defaults to `true`; set it to `false` to force the legacy path.
+* `missingMetadata` defaults to `sdr`, preserving legacy playback. Set it to
+  `reject` to fail when no usable color metadata is present.
+* `conflictPolicy` defaults to `reject`. It may be set to `sdr` to degrade
+  conflicting or incomplete metadata to SDR with a warning.
+* `minimumBitDepth` defaults to `10`. HDR samples below this value are
+  rejected with an error naming `transmux.hdr.bit-depth`.
+* `warnOnMissingMetadata` defaults to `false` so that existing SDR streams do
+  not add new logs. Set it to `true` when a missing metadata warning is wanted.
+* `toneMapping.strategy` defaults to `browser`. `passthrough` is an alias for
+  display-managed mapping; `sdr` is rejected as unsupported because it would
+  require pixel conversion.
+
+Migration example from the legacy behavior:
+
+```javascript
+videojs('playerId', {
+  html5: {
+    vhs: {
+      hdr: {
+        enabled: false
+      }
+    }
+  }
+});
+```
+
+Color metadata is retained across rendition switches. If a new rendition omits
+metadata, the session HDR marker is carried forward. Switching explicitly from
+HDR to SDR, or between HDR10 and HLG, is rejected by default.
+
+HDR state is isolated per `SegmentLoader` and per transmux worker, so concurrent
+players or simultaneous audio/video loaders do not share color state. The
+concurrent HDR10/HLG worker test verifies that two in-flight transmuxes retain
+their own metadata.
 
 ##### overrideNative
 * Type: `boolean`
@@ -844,6 +918,7 @@ This object contains a summary of HLS and player related stats.
 | mediaTransferDuration | number | Total time spent downloading media segments in milliseconds |
 | mediaBytesTransferred | number | Total number of content bytes downloaded |
 | mediaSecondsLoaded    | number | Total number of content seconds downloaded |
+| hdrProcessingDuration | number | Time spent parsing, validating, and writing HDR color metadata in milliseconds |
 | buffered              | array  | List of time ranges of content that are in the SourceBuffer |
 | currentTime           | number | The current position of the player |
 | currentSource         | object | The source object. Has the structure `{src: 'url', type: 'mimetype'}` |
